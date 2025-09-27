@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Seeded Wire Cubes (7-Point Seed → Random Palette)</title>
+  <title>Seeded Wire Cubes (7-Point Seed → Random Palette) + WebXR</title>
   <style>
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;overflow:hidden;background:#000;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
@@ -30,6 +30,7 @@
       <button id="startBtn">시작</button>
       <button id="stopBtn" class="ghost">중지</button>
       <button id="resetBtn" class="ghost">리셋(점/시드)</button>
+      <button id="wireBtn" class="ghost">와이어: ON</button>
     </div>
     <div class="row"><label>속도(초): <span id="speedVal" class="pill">3.0</span></label><input id="speed" type="range" min="1" max="8" step="0.5" value="3"></div>
     <div class="row"><label>스폰주기(ms): <span id="freqVal" class="pill">800</span></label><input id="freq" type="range" min="200" max="2000" step="100" value="800"></div>
@@ -38,14 +39,17 @@
   <div id="dbg">[READY] 화면에 7점을 찍어 시드를 만드세요.</div>
   <canvas id="seedCanvas"></canvas>
   <div id="three"></div>
-  <div id="help">7점 찍기 → 시작(Enter/버튼) · W=와이어 토글</div>
+  <div id="help">7점 찍기 → 시작(버튼) → 하단의 Enter VR 버튼으로 VR 모드</div>
 
-  <script>
-  (()=>{ 
+  <script type="module">
+    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+    import { VRButton } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/webxr/VRButton.js';
+
+    // ---------- DOM / HUD ----------
     const $=id=>document.getElementById(id);
     const dbg=$('dbg'), can=$('seedCanvas'), ctx=can.getContext('2d');
     const MAXPTS=7;
-    const state={points:[], seed:null, palette:[], running:false, wire:true};
+    const state={points:[], seed:null, palette:[], running:false};
 
     const fit=()=>{ can.width=innerWidth; can.height=innerHeight; draw(); };
     const say=s=>{ dbg.textContent=s; console.log(s); };
@@ -105,93 +109,110 @@
       say('[SEED] '+state.seed+' · 팔레트 '+arr.length+'색 생성. 시작을 누르세요.');
     }
 
-    // UI
+    // ---------- UI ----------
     const speedEl=$('speed'), freqEl=$('freq'), densEl=$('dens');
     const speedVal=$('speedVal'), freqVal=$('freqVal'), densVal=$('densVal');
+    const wireBtn=$('wireBtn');
     const syncUI=()=>{ speedVal.textContent=Number(speedEl.value).toFixed(1); freqVal.textContent=freqEl.value; densVal.textContent=densEl.value; };
     ['input','change'].forEach(ev=>{ speedEl.addEventListener(ev,syncUI); freqEl.addEventListener(ev,syncUI); densEl.addEventListener(ev,syncUI); });
     syncUI();
 
-    $('startBtn').onclick=()=>{ if(state.seed==null){ alert('먼저 화면에 7점을 찍어 시드를 생성하세요.'); return; } if(!state.running){ state.running=true; say('[RUN] 실행 시작'); } };
+    $('startBtn').onclick=()=>{
+      if(state.seed==null){ alert('먼저 화면에 7점을 찍어 시드를 생성하세요.'); return; }
+      if(!state.running){
+        state.running=true; say('[RUN] 실행 시작');
+        // 즉시 첫 스폰 + 씨드 캔버스 숨김
+        spawn();
+        can.style.pointerEvents='none';
+        can.style.opacity='0';
+      }
+    };
     $('stopBtn').onclick=()=>{ state.running=false; say('[STOP] 중지'); };
-    $('resetBtn').onclick=()=>{ state.running=false; state.seed=null; state.palette.length=0; state.points.length=0; $('ptCount').textContent='0/7'; $('seedVal').textContent='없음'; $('palCount').textContent='0색'; draw(); say('[RESET] 점과 시드를 초기화했습니다.'); };
+    $('resetBtn').onclick=()=>{
+      state.running=false; state.seed=null; state.palette.length=0; state.points.length=0;
+      $('ptCount').textContent='0/7'; $('seedVal').textContent='없음'; $('palCount').textContent='0색';
+      can.style.pointerEvents='auto'; can.style.opacity='1'; draw(); say('[RESET] 점과 시드를 초기화했습니다.');
+    };
 
     window.addEventListener('resize', fit, {passive:true});
     window.addEventListener('pointerdown', onClick, true);
     window.addEventListener('touchstart', e=>{ e.preventDefault(); onClick(e); }, {capture:true, passive:false});
 
-    // ==== Three.js ====
-    function ensureThree(ok){
-      if(window.THREE){ ok(); return; }
-      const sc=document.createElement('script');
-      sc.src='https://unpkg.com/three@0.160.0/build/three.min.js';
-      sc.onload=ok; sc.onerror=()=>say('Three.js 로드 실패'); document.head.appendChild(sc);
+    // ---------- Three.js + WebXR ----------
+    const root=$('three');
+    const renderer=new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
+    if (THREE.SRGBColorSpace) renderer.outputColorSpace=THREE.SRGBColorSpace;
+    renderer.setPixelRatio(Math.min(2, Math.max(0.85, devicePixelRatio||1)));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;                          // ★ WebXR 활성화
+    document.body.appendChild(VRButton.createButton(renderer)); // ★ Enter VR 버튼
+    root.appendChild(renderer.domElement);
+
+    const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x000000, 0.0006);
+    const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 5000);
+    camera.position.set(0, 0, 420); scene.add(camera);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.9));
+    const d=new THREE.DirectionalLight(0xffffff, 1.0); d.position.set(1,2,3); scene.add(d);
+
+    const group=new THREE.Group(); scene.add(group);
+    let lastT=0, acc=0; const cubes=[]; let wire=true;
+
+    wireBtn.onclick=()=>{
+      wire = !wire;
+      wireBtn.textContent = '와이어: ' + (wire?'ON':'OFF');
+      wireBtn.className = wire ? 'ghost' : '';
+      group.traverse(o=>{ if(o.isMesh && o.material) o.material.wireframe = wire; });
+      say('[WIRE] '+(wire?'ON':'OFF'));
+    };
+
+    function choiceFromPalette(rng){
+      const idx = Math.floor(rng()*state.palette.length) % Math.max(1,state.palette.length);
+      return new THREE.Color(state.palette[idx] || '#ffffff');
+    }
+    function createWireCuboid(rng){
+      const span=0.25;
+      const w = Math.max(12, 40 * (1+(rng()*2-1)*span));
+      const h = Math.max(12, 40 * (1+(rng()*2-1)*span));
+      const z = Math.max(12, 40 * (1+(rng()*2-1)*span));
+      const g = new THREE.BoxGeometry(w,h,z);
+      const col = choiceFromPalette(rng);
+      const m  = new THREE.MeshBasicMaterial({ color: col, wireframe: wire });
+      const mesh = new THREE.Mesh(g, m);
+      // 넓게 퍼져 옆으로 스쳐가도록 좌우/상하 범위 확대
+      mesh.position.set((rng()-0.5)*300, (rng()-0.5)*180, -800);
+      group.add(mesh);
+      const now = performance.now();
+      const life = Number(speedEl.value)*1000;
+      cubes.push({mesh, dieAt: now + life});
+    }
+    function spawn(){
+      if(state.seed==null || state.palette.length===0) return;
+      const base = (state.seed ^ (performance.now()|0)) >>> 0;
+      const rng = mulberry32(base);
+      const n = Number(densEl.value)|0;
+      for(let i=0;i<n;i++) createWireCuboid(rng);
     }
 
-    ensureThree(()=>{
-      const root=$('three');
-      const renderer=new THREE.WebGLRenderer({ antialias:true, alpha:true, powerPreference:'high-performance' });
-      if(THREE.SRGBColorSpace) renderer.outputColorSpace=THREE.SRGBColorSpace;
-      renderer.setPixelRatio(Math.min(2, Math.max(0.85, devicePixelRatio||1)));
-      renderer.setSize(innerWidth, innerHeight);
-      root.appendChild(renderer.domElement);
-
-      const scene=new THREE.Scene(); scene.fog=new THREE.FogExp2(0x000000, 0.0006);
-      const camera=new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 5000);
-      camera.position.set(0, 0, 420);
-      scene.add(camera);
-
-      scene.add(new THREE.AmbientLight(0xffffff, 0.9));
-      const d=new THREE.DirectionalLight(0xffffff, 1.0); d.position.set(1,2,3); scene.add(d);
-
-      const group=new THREE.Group(); scene.add(group);
-      let lastT=0, acc=0; const cubes=[]; let wire=true;
-
-      function choiceFromPalette(rng){
-        const idx = Math.floor(rng()*state.palette.length) % Math.max(1,state.palette.length);
-        return new THREE.Color(state.palette[idx] || '#ffffff');
+    function loop(t){
+      const dt = (t-lastT)/1000 || 1/60; lastT=t;
+      if(state.running){
+        acc += dt*1000;
+        const period = Number(freqEl.value);
+        while(acc >= period){ spawn(); acc -= period; }
       }
-      function createWireCuboid(rng){
-        const span=0.25;
-        const w = Math.max(12, 40 * (1+(rng()*2-1)*span));
-        const h = Math.max(12, 40 * (1+(rng()*2-1)*span));
-        const d = Math.max(12, 40 * (1+(rng()*2-1)*span));
-        const g = new THREE.BoxGeometry(w,h,d);
-        const col = choiceFromPalette(rng);
-        const m  = new THREE.MeshBasicMaterial({ color: col, wireframe: true });
-        const mesh = new THREE.Mesh(g, m);
-        mesh.position.set((rng()-0.5)*300, (rng()-0.5)*180, -800);
-        group.add(mesh);
-        const now = performance.now();
-        const life = Number(speedEl.value)*1000;
-        cubes.push({mesh, dieAt: now + life, rng});
-      }
-      function spawn(){
-        if(state.seed==null || state.palette.length===0) return;
-        const base = (state.seed ^ (performance.now()|0)) >>> 0;
-        const rng = mulberry32(base);
-        const n = Number(densEl.value)|0;
-        for(let i=0;i<n;i++) createWireCuboid(rng);
-      }
-      function loop(t){
-        const dt = (t-lastT)/1000 || 1/60; lastT=t;
-        if(state.running){ acc += dt*1000; const period = Number(freqEl.value); while(acc >= period){ spawn(); acc -= period; } }
-        for(let i=cubes.length-1;i>=0;i--){
-          const c=cubes[i];
-          c.mesh.rotation.x += dt*1.8; c.mesh.rotation.y += dt*1.6;
-          c.mesh.position.z += dt * (900/Number(speedEl.value));
-          if(performance.now() >= c.dieAt){ group.remove(c.mesh); c.mesh.geometry.dispose(); c.mesh.material.dispose(); cubes.splice(i,1); }
+      for(let i=cubes.length-1;i>=0;i--){
+        const c=cubes[i];
+        c.mesh.rotation.x += dt*1.8; c.mesh.rotation.y += dt*1.6;
+        c.mesh.position.z += dt * (900/Number(speedEl.value));
+        if(performance.now() >= c.dieAt){
+          group.remove(c.mesh); c.mesh.geometry.dispose(); c.mesh.material.dispose(); cubes.splice(i,1);
         }
-        renderer.render(scene, camera);
-        requestAnimationFrame(loop);
       }
-      requestAnimationFrame(loop);
+      renderer.render(scene, camera);
+    }
+    renderer.setAnimationLoop(loop); // VR/비VR 모두 지원
 
-      addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ $('startBtn').click(); } if(e.key==='w' || e.key==='W'){ wire = !wire; group.traverse(o=>{ if(o.isMesh && o.material) o.material.wireframe = wire; }); say('[WIRE] '+(wire?'ON':'OFF')); } });
-
-      fit(); say('[READY] 7점 → 시드 생성 → 시작');
-    });
-  })();
+    fit(); say('[READY] 7점 → 시드 생성 → 시작 → Enter VR');
   </script>
 </body>
 </html>
